@@ -3,7 +3,7 @@ from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.models import Model, load_model
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
-
+import plotly.graph_objects as go
 import streamlit as st
 import qrcode
 from io import BytesIO
@@ -25,23 +25,25 @@ def init_db():
     # 创建问卷结果表
     c.execute('''CREATE TABLE IF NOT EXISTS responses 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  student_id TEXT NOT NULL,
                   timestamp DATETIME,
                   responses TEXT,
                   cluster INTEGER,
                   factor_scores TEXT)''')
     
-    # 创建用户信息表（可选）
-    c.execute('''CREATE TABLE IF NOT EXISTS user_info 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  response_id INTEGER,
-                  age INTEGER,
-                  gender TEXT,
-                  education TEXT,
-                  FOREIGN KEY(response_id) REFERENCES responses(id))''')
+    # 尝试添加列（如果表已存在但缺少该列）
+    try:
+        c.execute("ALTER TABLE responses ADD COLUMN student_id TEXT NOT NULL DEFAULT 'unknown'")
+    except sqlite3.OperationalError as e:
+        # 列已存在时会报错，可以忽略
+        if "duplicate column name" not in str(e):
+            raise
+    
+    # 删除不再需要的用户信息表
+    c.execute("DROP TABLE IF EXISTS user_info")
     
     conn.commit()
     conn.close()
-
 # 初始化数据库
 init_db()
 
@@ -99,43 +101,26 @@ questions = [
 ]
 
 # 6. 保存数据到数据库
-def save_to_db(responses, cluster, factor_scores):
+def save_to_db(student_id, responses, cluster, factor_scores):
     conn = sqlite3.connect('scl90_data.db')
     c = conn.cursor()
     
     # 保存问卷结果
     c.execute('''INSERT INTO responses 
-                 (timestamp, responses, cluster, factor_scores) 
-                 VALUES (?, ?, ?, ?)''',
-              (datetime.now(), 
+                 (student_id, timestamp, responses, cluster, factor_scores) 
+                 VALUES (?, ?, ?, ?, ?)''',
+              (student_id,
+               datetime.now(), 
                str(responses), 
                int(cluster), 
                str(factor_scores)))
     
-    # 获取刚插入的ID
-    response_id = c.lastrowid
-    
-    # 保存用户信息（可选）
-    if 'user_info' in st.session_state:
-        user_info = st.session_state.user_info
-        c.execute('''INSERT INTO user_info 
-                     (response_id, age, gender, education) 
-                     VALUES (?, ?, ?, ?)''',
-                  (response_id, 
-                   user_info.get('age'), 
-                   user_info.get('gender'), 
-                   user_info.get('education')))
-    
     conn.commit()
     conn.close()
-    return response_id
-
 # 7. 创建问卷界面
 st.title("SCL-90心理健康自评量表")
 
-
 with st.sidebar:
-   
     # 管理员登录（简化版）
     st.subheader("管理员登录")
     admin_pass = st.text_input("密码", type="password")
@@ -145,18 +130,11 @@ with st.sidebar:
     elif 'admin' in st.session_state:
         del st.session_state.admin
 
-# 用户信息收集（可选）
-with st.expander("个人信息（可选）"):
-    user_info = {
-        'age': st.number_input("年龄", min_value=10, max_value=100, value=25),
-        'gender': st.selectbox("性别", ["男", "女", "其他", "不愿透露"]),
-        'education': st.selectbox("教育程度", 
-                                ["初中及以下", "高中/中专", "大专/本科", "硕士及以上", "不愿透露"])
-    }
-    st.session_state.user_info = user_info
-
 # 主问卷区域
 with st.form("scl90_form"):
+    # 学号输入
+    student_id = st.text_input("学号*", help="请输入您的学号", key="student_id")
+    
     st.subheader("请根据最近一周的感觉评分（1-5分）：")
     st.caption("1=没有，2=很轻，3=中等，4=偏重，5=严重")
     
@@ -176,7 +154,9 @@ with st.form("scl90_form"):
     submitted = st.form_submit_button("提交评估")
     
     if submitted:
-        if len(responses) != 90:
+        if not student_id:
+            st.error("请输入学号")
+        elif len(responses) != 90:
             st.error("请确保回答了所有90个问题")
         else:
             try:
@@ -212,49 +192,11 @@ with st.form("scl90_form"):
                 cluster = kmeans.predict(embedding)[0]
                 
                 # 保存到数据库
-                response_id = save_to_db(responses, cluster, factor_scores)
+                save_to_db(student_id, responses, cluster, factor_scores)
                 
                 # 显示结果
                 st.success("评估完成！")
-                st.info(f"您的评估ID: {response_id} (如需后续咨询请保存此ID)")
-                
-                descriptions = {
-                    0: "您的心理健康状况良好",
-                    1: "存在轻度心理困扰",
-                    2: "建议寻求专业心理帮助"
-                }
-                
-                st.write(f"**评估结果**: {descriptions[cluster]}")
-                
-                
-                # 显示因子得分
-                st.subheader("各因子得分")
-                factor_names = list(factors.keys())
-                for name, score in zip(factor_names, factor_scores):
-                    st.write(f"{name}: {score:.2f}")
-                
-            except Exception as e:
-                st.error(f"处理出错: {str(e)}")
-                st.info("请确保已回答所有问题并重新提交")
-            # 在显示建议前添加类型检查和范围验证
-
-        if len(responses) != 90:
-            st.error("请确保回答了所有90个问题")
-        else:
-            try:
-                # ... [之前的代码保持不变，直到分类预测部分] ...
-                
-                # 确保 cluster 是整数且在有效范围内
-                cluster = int(cluster)  # 确保转换为整数
-                if cluster not in [0, 1, 2]:  # 验证范围
-                    cluster = 2  # 默认设为最需要关注的群体
-                
-                # 保存到数据库
-                response_id = save_to_db(responses, cluster, factor_scores)
-                
-                # 显示结果
-                st.success("评估完成！")
-                st.info(f"您的评估ID: {response_id} (如需后续咨询请保存此ID)")
+                st.info(f"您的学号: {student_id} (请妥善保存)")
                 
                 descriptions = {
                     0: "您的心理健康状况良好",
@@ -264,9 +206,50 @@ with st.form("scl90_form"):
                 
                 st.write(f"**评估结果**: {descriptions.get(cluster, '未知状态')}")
                 
-                # ... [可视化代码保持不变] ...
+                st.subheader("因子得分雷达图")
+                # 准备雷达图数据
+                categories = list(factors.keys())
+                values = factor_scores
                 
-                # 根据不同簇显示建议 - 修复后的版本
+                fig = go.Figure()
+                
+                fig.add_trace(go.Scatterpolar(
+                    r=values,
+                    theta=categories,
+                    fill='toself',
+                    name='因子得分'
+                ))
+                
+                fig.update_layout(
+                    polar=dict(
+                        radialaxis=dict(
+                            visible=True,
+                            range=[0, 5]  # SCL-90评分范围是1-5
+                        )),
+                    showlegend=True,
+                    title="SCL-90各因子得分雷达图"
+                )
+                
+                st.plotly_chart(fig)
+                
+                # 显示因子得分表格
+                st.subheader("各因子得分详情")
+                factor_data = {
+                    "因子名称": categories,
+                    "平均得分": [f"{score:.2f}" for score in values],
+                    "解释": [
+                        "身体不适感" if score > 2.5 else "正常" if score < 1.5 else "轻微不适"
+                        for score in values
+                    ]
+                }
+                st.table(pd.DataFrame(factor_data))
+                
+                # 显示因子得分
+                st.subheader("各因子得分")
+                factor_names = list(factors.keys())
+                for name, score in zip(factor_names, factor_scores):
+                    st.write(f"{name}: {score:.2f}")
+                
                 st.subheader("个性化建议")
                 
                 cluster_advice = {
@@ -290,11 +273,8 @@ with st.form("scl90_form"):
                     ]
                 }
                 
-                # 使用 get() 方法提供默认值，防止键不存在
-                for advice in cluster_advice.get(cluster, cluster_advice[2]):  # 默认使用最严重情况的建议
+                for advice in cluster_advice.get(cluster, cluster_advice[2]):
                     st.markdown(f"- {advice}")
-                
-                # ... [其余代码保持不变] ...
                 
             except Exception as e:
                 st.error(f"处理出错: {str(e)}")
