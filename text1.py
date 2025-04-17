@@ -12,8 +12,10 @@ import socket
 import sqlite3
 from datetime import datetime
 import pandas as pd
-plt.rcParams['font.sans-serif'] = ['SimHei']  # 使用黑体
-plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+
 
 # 1. 初始化数据库
 def init_db():
@@ -224,26 +226,7 @@ with st.form("scl90_form"):
                 
                 st.write(f"**评估结果**: {descriptions[cluster]}")
                 
-                # 可视化部分修改为：
-                fig, ax = plt.subplots()
-                all_embeddings = np.load('embeddings.npy')
-
-                # 设置中文字体
-                plt.rcParams['font.sans-serif'] = ['SimHei']
-                plt.rcParams['axes.unicode_minus'] = False
-
-                for i in range(3):
-                    points = all_embeddings[kmeans.labels_ == i]
-                    ax.scatter(points[:,0], points[:,1], label=f'群体 {i}', alpha=0.5)
-                ax.scatter(embedding[0,0], embedding[0,1], c='red', s=100, label='您的位置')
-
-                # 设置中文标题和标签
-                ax.set_title("您在群体中的分布位置", fontsize=14)
-                ax.set_xlabel("特征维度1", fontsize=12)
-                ax.set_ylabel("特征维度2", fontsize=12)
-                ax.legend()
-
-                st.pyplot(fig)
+                
                 # 显示因子得分
                 st.subheader("各因子得分")
                 factor_names = list(factors.keys())
